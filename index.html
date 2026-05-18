@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+    <title>Dev Server Manager</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">Dev Server Manager</div>
+      <div class="topbar-actions">
+        <button id="add-btn" class="btn primary">+ Add Project</button>
+        <button id="ports-btn" class="btn">Listening Ports</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <!-- Left: project list -->
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <span>Projects</span>
+          <span id="project-count" class="muted">0</span>
+        </div>
+        <ul id="project-list" class="project-list"></ul>
+      </aside>
+
+      <!-- Right: details / logs OR ports panel -->
+      <section id="detail" class="detail">
+        <div class="empty" id="empty-state">
+          <p>No project selected.</p>
+          <p class="muted small">Click <b>+ Add Project</b> to register a folder, then select it to view logs.</p>
+        </div>
+      </section>
+    </main>
+
+    <!-- Add / Edit project modal -->
+    <div id="modal" class="modal-overlay hidden">
+      <div class="modal">
+        <h2 id="modal-title">Add Project</h2>
+        <label class="field">
+          <span>Project name</span>
+          <input id="f-name" type="text" placeholder="my-app" />
+        </label>
+        <label class="field">
+          <span>Folder</span>
+          <div class="folder-row">
+            <input id="f-folder" type="text" readonly placeholder="(none chosen)" />
+            <button class="btn" id="f-pick">Browse…</button>
+          </div>
+        </label>
+        <label class="field">
+          <span>Command</span>
+          <input id="f-command" type="text" value="npm run dev" />
+        </label>
+        <label class="field">
+          <span>Port</span>
+          <input id="f-port" type="number" value="3000" min="1" max="65535" />
+        </label>
+        <div class="modal-actions">
+          <button class="btn" id="f-cancel">Cancel</button>
+          <button class="btn primary" id="f-save">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Listening ports modal -->
+    <div id="ports-modal" class="modal-overlay hidden">
+      <div class="modal wide">
+        <h2>System Listening Ports (TCP)</h2>
+        <p class="muted small">Every IPv4 LISTEN socket on this machine. Useful when a port you wanted is held by another process.</p>
+        <div class="ports-list-wrap">
+          <table class="ports-table">
+            <thead>
+              <tr><th>Port</th><th>Process</th><th>PID</th><th>Host</th></tr>
+            </thead>
+            <tbody id="ports-tbody"></tbody>
+          </table>
+        </div>
+        <div class="modal-actions">
+          <button class="btn" id="ports-refresh">Refresh</button>
+          <button class="btn primary" id="ports-close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>
