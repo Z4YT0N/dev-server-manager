@@ -2,7 +2,7 @@
 
 **Stop losing track of your dev servers.**
 
-https://github.com/Z4YT0N/dev-server-manager/releases/download/v0.1.0/dev-server-manager-demo.mp4
+<video src="https://github.com/Z4YT0N/dev-server-manager/releases/download/v0.1.0/dev-server-manager-demo.mp4" controls width="100%"></video>
 
 If you're vibe-coding five things at once, juggling `next dev` here, `vite` there, an `npm run dev` you started yesterday and forgot about — this is for you.
 
