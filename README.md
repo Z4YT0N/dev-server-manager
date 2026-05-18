@@ -2,6 +2,8 @@
 
 **Stop losing track of your dev servers.**
 
+https://github.com/Z4YT0N/dev-server-manager/releases/download/v0.1.0/dev-server-manager-demo.mp4
+
 If you're vibe-coding five things at once, juggling `next dev` here, `vite` there, an `npm run dev` you started yesterday and forgot about — this is for you.
 
 > Made for the kind of developer who has 12 terminal tabs open, can't remember which one is the dashboard, and just `taskkill`'d everything to start over. Again.
