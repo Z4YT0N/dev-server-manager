@@ -3,8 +3,7 @@
   "version": "0.1.0",
   "private": false,
   "license": "MIT",
-  "description": "Tiny Electron desktop app to start, stop, and monitor local dev servers across multiple projects.",
-  "main": "main.js",
+  "description": "Tiny ~2 MB Neutralinojs desktop app to start, stop, and monitor local dev servers across multiple projects.",
   "homepage": "https://github.com/Z4YT0N/dev-server-manager",
   "repository": {
     "type": "git",
@@ -19,70 +18,19 @@
     "process-manager",
     "next.js",
     "vite",
-    "electron",
+    "neutralinojs",
     "monitor"
   ],
   "scripts": {
-    "start": "set \"ELECTRON_RUN_AS_NODE=\" && electron .",
-    "dev": "set \"ELECTRON_RUN_AS_NODE=\" && electron .",
-    "icon": "node scripts/build-icon.mjs",
-    "dist": "electron-builder --win --x64",
-    "dist:nsis": "electron-builder --win nsis --x64",
-    "dist:portable": "electron-builder --win portable --x64"
+    "update": "neu update",
+    "start": "neu run",
+    "dev": "neu run",
+    "build": "neu build --release",
+    "icon": "node scripts/build-icon.mjs"
   },
   "devDependencies": {
-    "electron": "^32.0.0",
-    "electron-builder": "^25.0.0",
+    "@neutralinojs/neu": "^11.0.0",
     "sharp": "^0.33.0",
     "to-ico": "^1.1.5"
-  },
-  "build": {
-    "appId": "com.z4yt0n.dev-server-manager",
-    "productName": "Dev Server Manager",
-    "copyright": "Copyright © 2026 Z4YT0N",
-    "asar": true,
-    "compression": "maximum",
-    "removePackageScripts": true,
-    "removePackageKeywords": true,
-    "electronLanguages": ["en-US"],
-    "files": [
-      "main.js",
-      "preload.js",
-      "index.html",
-      "renderer.js",
-      "styles.css",
-      "build/icon.ico",
-      "build/icon.png",
-      "LICENSE",
-      "!**/.{md,txt}",
-      "!**/{.DS_Store,.editorconfig,.eslintrc*,.prettierrc*,.gitignore,.gitattributes}",
-      "!**/{test,tests,spec,specs,docs,doc,examples,example,coverage,.github}/**",
-      "!**/node_modules/**/*.{md,markdown,ts,d.ts,map,flow,html,jsx,tsx}",
-      "!**/node_modules/**/{LICENSE*,license*,CHANGELOG*,changelog*,HISTORY*,history*,NOTICE*,notice*,AUTHORS*,authors*}",
-      "!**/node_modules/**/{src,test,tests,__tests__,scripts,examples}/**",
-      "!**/{*.log,*.tsbuildinfo}"
-    ],
-    "directories": {
-      "buildResources": "build",
-      "output": "release"
-    },
-    "win": {
-      "icon": "build/icon.ico",
-      "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] }
-      ]
-    },
-    "nsis": {
-      "oneClick": true,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": false,
-      "deleteAppDataOnUninstall": false,
-      "installerIcon": "build/icon.ico",
-      "uninstallerIcon": "build/icon.ico"
-    },
-    "portable": {
-      "artifactName": "DevServerManager-Portable-${version}.exe"
-    }
   }
 }

@@ -2,7 +2,6 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
     <title>Dev Server Manager</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
@@ -84,6 +83,9 @@
       </div>
     </div>
 
+    <!-- Neutralinojs client library — injected at build/run, provides the
+         `Neutralino` global the renderer uses for OS access. -->
+    <script src="neutralino.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

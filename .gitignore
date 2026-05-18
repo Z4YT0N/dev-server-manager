@@ -1,5 +1,12 @@
 node_modules/
 dist/
-out/
+
+# Neutralinojs build outputs and downloaded runtime
+bin/
+.tmp/
+resources/neutralino.js
+resources/neutralino.d.ts
+
+# Misc
 .DS_Store
 *.log
