@@ -1,35 +1,67 @@
 # Dev Server Manager
 
-A **1.7 MB** desktop app for managing dev servers across multiple projects. Auto-detects what's already running, saves your projects, starts/stops with a click, kills the whole process tree on stop. Built on Neutralinojs (uses your system's WebView2 — no Chromium bundled).
+**Stop losing track of your dev servers.**
 
-Built because keeping track of `next dev` on 3000 here, `vite` on 5173 there, and `npm run dev` somewhere else from a sea of terminal tabs is awful.
+If you're vibe-coding five things at once, juggling `next dev` here, `vite` there, an `npm run dev` you started yesterday and forgot about — this is for you.
 
-## Why this exists
+> Made for the kind of developer who has 12 terminal tabs open, can't remember which one is the dashboard, and just `taskkill`'d everything to start over. Again.
 
-Most dev-server-manager-style tools are 70+ MB Electron apps that eat 200 MB of RAM at idle. This one is **1.6 MB on disk + ~26 MB of RAM** because it uses the WebView2 already on your machine, not its own bundled browser.
+---
 
-| | This app | Typical Electron equivalent |
+## The problem
+
+You start a project. `next dev` on 3000. ✓
+
+You jump to a second one. `vite` on 5173. ✓
+
+You pop into your friend's repo for five minutes. Port 3000 in use. You don't remember which terminal launched it. You kill node from Task Manager. Now your first dashboard is gone too. You sigh and re-run everything.
+
+This happens to you weekly. Sometimes daily.
+
+## What this does
+
+One window. Every dev server on your machine, listed.
+
+- **Auto-detects what's already running.** Open the app — it instantly sees the `next dev` on 3000, the `vite` on 5173, the `npm run dev` you started in the wrong folder this morning. It tells you which project each one belongs to (reads `package.json` for the real name).
+- **Saves your projects** so they're a click away. Folder, command, default port — set once, remembered.
+- **One-click start / stop.** Stop kills the whole process tree, including the workers Next.js leaves behind. No more zombies hogging ports.
+- **"Running (external)" cross-reference.** A server you started in a terminal still shows up under its saved project — running, live PID, live port. Stop it from inside the app too.
+- **Shows you who stole your port.** "Listening Ports" panel lists every TCP socket on the machine + the process holding it. The `netstat | grep` ritual ends.
+- **Auto-cleanup on close.** Quit the app, every dev server it started gets killed too. Never leak again.
+
+## Why it's 1.7 MB
+
+Because it should be.
+
+A tool that just lists processes and clicks buttons doesn't need to bundle Chromium. This one uses the WebView2 already on every Windows 10/11 machine, so the entire app is **1.6 MB on disk** and sits at **~26 MB of RAM** at idle. Open it, leave it open, forget it's there.
+
+| | Dev Server Manager | Typical Electron tool |
 |---|---|---|
-| Disk | ~1.7 MB (unzipped) | 70-300 MB |
-| RAM at idle | ~26 MB | 120-300 MB |
-| Dependencies | None at runtime | Bundled Chromium + Node |
+| Download size | **0.8 MB** zipped | 70-300 MB |
+| Disk after extract | **1.7 MB** | 70-300 MB |
+| RAM at idle | **~26 MB** | 120-300 MB |
+| Bundled browser | None — uses your WebView2 | Yes (Chromium) |
+| Startup time | Instant | 2-4 seconds |
 
-## Features
+Your laptop fan stays quiet.
 
-- **Auto-detect running dev servers** — scans listening TCP ports, cross-references with `node.exe` command lines via WMI on Windows, classifies the framework (Next.js / Vite / Webpack / Nuxt / Remix / Astro / nodemon / `npm run dev` / ...), extracts the project folder from the `node_modules` path, reads `package.json` for the name
-- **Auto-add detected projects** — new dev servers your terminal started show up as saved projects automatically
-- **Running (external) state** — saved entries cross-reference detection; if a folder is currently running externally, it shows as Running with the live PID + port
-- **Per-project Start / Stop / Edit / Delete** — Stop kills the whole process tree (works for both managed and external processes)
-- **Live stdout/stderr panel** — for app-managed processes, last 200 lines kept
-- **Listening Ports panel** — every TCP LISTEN socket on the machine with the owning process name
-- **Auto-cleanup on quit** — every dev server the app started gets killed too
-- **Native Windows look** — Segoe UI, light grey chrome, blue accent
+---
 
 ## Download
 
-Grab `DevServerManager-win-x64-0.1.0.zip` from the [Releases page](https://github.com/Z4YT0N/dev-server-manager/releases). Extract anywhere, double-click `DevServerManager.exe`.
+**[v0.1.0 — Windows](https://github.com/Z4YT0N/dev-server-manager/releases/latest)** • 800 KB zip
 
-> Requires **WebView2** on Windows. Pre-installed on Windows 10 (April 2018) and later. If you're on something older, install the [Evergreen Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/).
+Extract anywhere. Double-click `DevServerManager.exe`. No installer, no admin, fully portable. Drop the folder on a USB stick if you want.
+
+> Needs WebView2, pre-installed on Windows 10 (April 2018) and later. On older Windows: install the [Evergreen Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) first.
+
+## What it auto-detects
+
+Out of the box: **Next.js, Vite, Webpack, Nuxt, Remix, Astro, SvelteKit, `npm run dev`, `pnpm dev`, `yarn dev`, nodemon.**
+
+Missing your favorite? It's a 3-line regex add in `resources/renderer.js` (`classifyDevCommand`). Open an issue with the framework's command line and we'll add it.
+
+---
 
 ## Run from source
 
@@ -37,7 +69,7 @@ Grab `DevServerManager-win-x64-0.1.0.zip` from the [Releases page](https://githu
 git clone https://github.com/Z4YT0N/dev-server-manager
 cd dev-server-manager
 npm install
-npx neu update    # downloads ~2 MB of platform binaries
+npx neu update    # downloads ~2 MB of Neutralinojs binaries
 npm start
 ```
 
@@ -47,65 +79,65 @@ npm start
 npm run build
 ```
 
-Produces `dist/DevServerManager/DevServerManager-win_x64.exe` + `dist/DevServerManager/resources.neu`. Both files must ship together.
+Produces `dist/DevServerManager/DevServerManager-win_x64.exe` + `resources.neu`. Both ship together.
 
-## Architecture
+---
 
-Tiny by design. There is **no separate main process** — everything runs in the renderer (`resources/renderer.js`), which gets direct access to OS primitives via Neutralino's API:
+## How auto-detection works under the hood
+
+When `next dev` / `vite` / etc. run, the **process actually bound to your port** is usually a worker like `node ...next/dist/server/lib/start-server.js` — not the CLI you typed. The app:
+
+1. Lists listening TCP via `netstat -ano -p TCP`
+2. Resolves PIDs to image names via `tasklist /FO CSV /NH`
+3. For each `node.exe` PID, fetches the command line via `Get-CimInstance Win32_Process` (PowerShell `-EncodedCommand` so cmd.exe quoting can't corrupt it)
+4. Matches the command line against framework patterns
+5. Extracts the project root from the path that appears before `\node_modules\`
+6. Reads the project's `package.json` to get a real display name
+
+Windows hides a process's CWD without admin/native bindings, so the path-extraction approach is the reliable fallback. Works for any framework that loads from `node_modules`.
+
+## Architecture (the short version)
+
+No separate main process. The whole app is one ~700-line file (`resources/renderer.js`) calling Neutralinojs APIs directly:
 
 ```js
-await Neutralino.os.execCommand('netstat -ano -p TCP');     // shell out
-await Neutralino.os.spawnProcess('npm run dev', cwd);       // spawn child
-await Neutralino.filesystem.readFile(`${dir}/projects.json`); // persistence
-await Neutralino.os.showFolderDialog('Pick project folder');  // file picker
+await Neutralino.os.execCommand('netstat -ano -p TCP');
+await Neutralino.os.spawnProcess('npm run dev', cwd);
+await Neutralino.filesystem.readFile(`${dir}/projects.json`);
+await Neutralino.os.showFolderDialog('Pick project folder');
 ```
 
-No IPC bridge, no preload script, no `nodeIntegration` config dance. The whole "backend" is ~600 lines of plain JavaScript.
+No IPC bridge, no preload, no `nodeIntegration` config to get wrong.
 
-## How auto-detection works
-
-When `next dev`, `vite`, etc. run, the **process actually bound to the port** is usually a worker like `node ...next/dist/server/lib/start-server.js`. The app:
-
-1. Lists listening TCP ports via `netstat -ano -p TCP`
-2. Resolves each PID to its image name via `tasklist /FO CSV`
-3. For `node.exe` PIDs, pulls command lines via `Get-CimInstance Win32_Process` (PowerShell with `-EncodedCommand` so quoting survives)
-4. Classifies the command line against framework patterns
-5. Extracts the project root from the path before `\node_modules\`
-6. Reads the project's `package.json` for a display name
-
-Windows hides process CWD without admin/native bindings, so the path-extraction route is the reliable way. Works for any framework that loads from `node_modules`.
-
-## Troubleshooting
-
-### My dev server isn't being detected
-
-The classifier looks for these patterns in the process command line:
-
-- `next dev` / `next/dist/server/lib/start-server.js` / `next/dist/bin/next` → Next.js
-- `vite` / `vite/bin/vite.js` → Vite
-- `webpack-dev-server` / `webpack serve` → Webpack
-- `nuxt dev` / `nuxt/bin/nuxt-cli.mjs` → Nuxt
-- `(remix|astro|svelte-kit) dev` → Framework
-- `npm run dev` / `pnpm dev` / `yarn dev`
-- `nodemon`
-
-If your framework isn't here, open an issue or PR — it's a 3-line regex add in `resources/renderer.js` (`classifyDevCommand`).
-
-### App won't start (`Failed to launch WebView2`)
-
-Install the [Evergreen WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/). Required on very old Windows builds.
+---
 
 ## Contributing
 
-PRs welcome. Anything that's a framework-detection gap (a new dev server type, a new command-line pattern) is especially appreciated.
+PRs welcome. Especially appreciated:
 
-The interesting code is in two files:
+- **New framework patterns** — the regex set in `classifyDevCommand` is the most likely-to-need-expanding part of the code
+- **Linux / macOS detection** — the binaries build cross-platform, but the detector currently assumes Windows tooling (`netstat -ano`, `tasklist`, WMI). Porting `getListeningPorts` and `fetchNodeCommandLines` to `lsof` + `ps -ef` would unlock Mac/Linux
+- **Reading process CWD on Windows without admin** — if you know a way, this would be the single biggest accuracy upgrade
 
-- `resources/renderer.js` — everything: persistence, detection, spawn/kill, UI
+The interesting files:
+
+- `resources/renderer.js` — everything: detection, classifier, spawn/kill, UI
 - `neutralino.config.json` — window settings, native API allowlist
 
-If you find a way to read a process's actual CWD on Windows without admin/native bindings, that would be a huge upgrade — drop it in `extractProjectFolder` in `resources/renderer.js`.
+## Troubleshooting
+
+**SmartScreen warning on first run.** The exe is unsigned (code-signing certs cost money for an unfunded side project). Click **More info → Run anyway**. The source is right here, audit away.
+
+**App won't start.** Most likely WebView2 isn't installed — grab the [Evergreen Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/). Pre-installed on Windows 10+ since April 2018, so this only matters on very old machines.
+
+**My dev server isn't being detected.** Either the framework isn't in the classifier yet (open an issue with the command line), or it doesn't go through `node.exe` (e.g., Python's `runserver` — out of scope).
+
+**Detected server is "Stopped" in Saved.** This means the folder paths don't match. Open the saved entry's Edit dialog and verify the folder is the project root (the one with `package.json`), not a subfolder.
+
+---
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT.
+
+Built because nobody else had built it small enough.
