@@ -325,6 +325,138 @@ input { font: inherit; }
 }
 .ports-table tr:hover td { background: #f8fbff; }
 
+/* ── v0.2 additions ──────────────────────────────────────── */
+
+/* Filter row above project list */
+.filter-row {
+  padding: 8px 12px;
+  border-bottom: 1px solid #ececec;
+  background: #fafafa;
+}
+.filter-row input {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid #d4d4d4;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.filter-row input:focus {
+  outline: none;
+  border-color: #0078d4;
+  box-shadow: 0 0 0 1px #0078d4;
+}
+
+/* Resource line under sidebar entries */
+.project-list .saved-meta {
+  font-size: 10px;
+  color: #888;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+}
+.project-list .saved-meta:empty { display: none; }
+
+/* Icon button (Open ↗ on sidebar rows) */
+.btn-icon {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid #c0c0c0;
+  border-radius: 3px;
+  color: #0078d4;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 6px;
+}
+.btn-icon:hover { background: #e6f3ff; }
+
+/* Detail meta — inline checkbox + restarting pill */
+.meta-toggle { display: inline-flex; align-items: center; }
+.checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #5a5a5a;
+  cursor: pointer;
+}
+.checkbox input { margin: 0; }
+.meta-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #fff4e5;
+  color: #b05a00;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid #f5cb95;
+}
+
+/* Log toolbar (filter + clear) */
+.log-toolbar {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+.log-toolbar input {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid #d4d4d4;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+}
+.log-toolbar input:focus {
+  outline: none;
+  border-color: #0078d4;
+  box-shadow: 0 0 0 1px #0078d4;
+}
+
+/* .env preview table */
+.env-table {
+  border: 1px solid #ececec;
+  border-radius: 4px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.env-row {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid #f0f0f0;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+}
+.env-row:last-child { border-bottom: none; }
+.env-row .env-key { font-weight: 600; color: #1f1f1f; }
+.env-row .env-val {
+  color: #5a5a5a;
+  word-break: break-all;
+}
+.env-row.secret .env-val { color: #b05a00; font-style: italic; }
+
+/* Custom patterns add form */
+.pattern-form {
+  display: grid;
+  grid-template-columns: 1fr 2fr auto;
+  gap: 8px;
+  margin-top: 12px;
+}
+.pattern-form input {
+  padding: 6px 8px;
+  border: 1px solid #c0c0c0;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+}
+.pattern-form input:focus {
+  outline: none;
+  border-color: #0078d4;
+  box-shadow: 0 0 0 1px #0078d4;
+}
+
 /* ── Scrollbar ───────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: #f0f0f0; }
