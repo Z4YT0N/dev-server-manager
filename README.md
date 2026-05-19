@@ -31,6 +31,18 @@ One window. Every dev server on your machine, listed.
 - **Shows you who stole your port.** "Listening Ports" panel lists every TCP socket on the machine + the process holding it. The `netstat | grep` ritual ends.
 - **Auto-cleanup on close.** Quit the app, every dev server it started gets killed too. Never leak again.
 
+### New in v0.2
+
+- **Open in browser** — small `↗` button next to each running server. One click, opens `http://localhost:PORT`.
+- **Auto-restart on crash** — per-project toggle. If `next dev` falls over, the watchdog spawns it again after 2s, up to 3 attempts.
+- **Live CPU & RAM** — every running server shows real-time CPU% and memory next to its row. Catch the runaway TypeScript compiler before your laptop melts.
+- **Activity log** — last 400 lines per process, filterable inline, persists across stop/crash so you can read what went wrong.
+- **Ready-line notification** — Windows toast when your dev server prints "ready" / "listening". Alt-tab away while it builds.
+- **`.env` preview** — peek at the variables a project uses (values masked for `secret|password|token|key|api`). No more "wait, did I set DATABASE_URL?".
+- **Project filter** — search box above the sidebar. Live-filter by name, folder, command, or port.
+- **System tray** — minimise to tray, "Stop all" + "Quit" from the right-click menu, dev servers stay running while the window is hidden.
+- **Custom framework patterns** — add your own regex from the UI to detect in-house CLIs the built-in list doesn't know about. Saved to disk, applied on the next poll.
+
 ## Why it's 1.7 MB
 
 Because it should be.
@@ -51,7 +63,7 @@ Your laptop fan stays quiet.
 
 ## Download
 
-**[v0.1.0 — Windows](https://github.com/Z4YT0N/dev-server-manager/releases/latest)** • 800 KB zip
+**[v0.2.0 — Windows](https://github.com/Z4YT0N/dev-server-manager/releases/latest)** • ~900 KB zip
 
 Extract anywhere. Double-click `DevServerManager.exe`. No installer, no admin, fully portable. Drop the folder on a USB stick if you want.
 
@@ -61,7 +73,7 @@ Extract anywhere. Double-click `DevServerManager.exe`. No installer, no admin, f
 
 Out of the box: **Next.js, Vite, Webpack, Nuxt, Remix, Astro, SvelteKit, `npm run dev`, `pnpm dev`, `yarn dev`, nodemon.**
 
-Missing your favorite? It's a 3-line regex add in `resources/renderer.js` (`classifyDevCommand`). Open an issue with the framework's command line and we'll add it.
+Missing your favorite? Click **Custom Patterns** in the toolbar and add a regex from the UI — no rebuild needed. (Or send a PR with the framework's command line so it ships built-in.)
 
 ---
 
