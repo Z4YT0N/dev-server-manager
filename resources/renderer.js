@@ -1,50 +1,58 @@
 /**
- * Dev Server Manager — Neutralinojs renderer.
+ * Dev Server Manager — Neutralinojs renderer (v0.2.0).
  *
- * Single-file app: there is no separate main process. Neutralino's
- * `os`, `filesystem`, and `events` modules give the renderer direct
- * access to OS primitives, so we keep ALL logic here and avoid the
- * IPC bridge dance Electron required.
+ * Single-file app: no separate main process. Neutralino's `os`,
+ * `filesystem`, and `events` modules give the renderer direct OS access
+ * so we keep ALL logic here and avoid the IPC bridge dance Electron
+ * required.
  *
- * Major sections:
- *   1. Persistence (load / save projects + ignored folders to disk)
- *   2. Detection (netstat + WMI cmd-line scrape + classifier)
+ * Sections (search for ── to jump):
+ *   1. Bootstrap, globals, persistence
+ *   2. Detection (netstat + WMI cmd-line scrape + classifier + custom patterns)
  *   3. Auto-add (detected projects → saved entries)
- *   4. Process control (spawn / kill / log capture)
- *   5. UI rendering (sidebar + detail panel + modals)
+ *   4. Process control (spawn / kill / log capture / auto-restart watchdog)
+ *   5. CPU/RAM polling
+ *   6. System tray + window lifecycle
+ *   7. UI rendering (sidebar + detail + modals)
+ *
+ * Platform note: detection currently relies on Windows tooling
+ * (netstat, tasklist, Get-CimInstance). All detection guards run only
+ * when isWin is true; on macOS/Linux you can still use Saved-project
+ * Start/Stop manually, you just won't get auto-discovery yet.
  */
 
-// ── Bootstrap ─────────────────────────────────────────────────────────
+// ── Bootstrap & globals ──────────────────────────────────────────────
 
 Neutralino.init();
-
-Neutralino.events.on('windowClose', async () => {
-  // Kill every dev server WE started before quitting.
-  for (const id of [...running.keys()]) {
-    await killSpawned(id);
-  }
-  Neutralino.app.exit();
-});
-
-// ── Globals ───────────────────────────────────────────────────────────
 
 const $ = (sel) => document.querySelector(sel);
 const isWin = NL_OS === 'Windows';
 
-let DATA_DIR = '';            // resolved at startup
-let projects = [];            // persisted saved projects
-const running = new Map();    // id → { processId, pid, startedAt, logs[] }
-let detected = [];            // external dev servers we found running
+let DATA_DIR = '';
+let projects = [];
+const running = new Map();   // id → { processId, pid, startedAt, logs[], restartCount, lastReadyNotified, cpu, mem }
+const watchdog = new Map();  // id → setTimeout handle for pending restart
+const exitedLogs = new Map(); // id → string[]  (kept after process exit so user can still read)
+let detected = [];
 let selectedId = null;
 let editingId = null;
+let customPatterns = [];     // [{ id, name, regex, framework }]
+let filterText = '';
+let trayEnabled = true;      // user can toggle from tray menu
 
 const LOG_LIMIT = 400;
 const POLL_MS = 5000;
+const PERF_POLL_MS = 6000;
+const RESTART_DELAY_MS = 2000;
+const RESTART_BACKOFF_LIMIT = 3;
 
-// ── Path helpers ──────────────────────────────────────────────────────
+// ── Path & format helpers ────────────────────────────────────────────
 
-function projectsFile() { return `${DATA_DIR}/projects.json`; }
-function ignoredFile()  { return `${DATA_DIR}/ignored-folders.json`; }
+function projectsFile()   { return `${DATA_DIR}/projects.json`; }
+function ignoredFile()    { return `${DATA_DIR}/ignored-folders.json`; }
+function patternsFile()   { return `${DATA_DIR}/custom-patterns.json`; }
+function logFileFor(id)   { return `${DATA_DIR}/logs/${id}.log`; }
+function settingsFile()   { return `${DATA_DIR}/settings.json`; }
 
 function normalizeFolder(folder) {
   if (!folder) return '';
@@ -53,7 +61,16 @@ function normalizeFolder(folder) {
   return f;
 }
 
+function shellEscape(s) {
+  return String(s).replace(/[`$"\\]/g, '\\$&');
+}
+
 // ── Persistence ──────────────────────────────────────────────────────
+
+async function ensureDataDir() {
+  try { await Neutralino.filesystem.createDirectory(DATA_DIR); } catch { /* exists */ }
+  try { await Neutralino.filesystem.createDirectory(`${DATA_DIR}/logs`); } catch { /* exists */ }
+}
 
 async function loadProjects() {
   try {
@@ -66,11 +83,8 @@ async function loadProjects() {
 }
 
 async function saveProjects() {
-  try { await Neutralino.filesystem.createDirectory(DATA_DIR); } catch { /* exists */ }
-  await Neutralino.filesystem.writeFile(
-    projectsFile(),
-    JSON.stringify(projects, null, 2),
-  );
+  await ensureDataDir();
+  await Neutralino.filesystem.writeFile(projectsFile(), JSON.stringify(projects, null, 2));
 }
 
 async function loadIgnoredFolders() {
@@ -83,7 +97,57 @@ async function loadIgnoredFolders() {
   }
 }
 
-// ── Detection: listening ports ────────────────────────────────────────
+async function loadCustomPatterns() {
+  try {
+    const text = await Neutralino.filesystem.readFile(patternsFile());
+    const arr = JSON.parse(text);
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveCustomPatterns() {
+  await ensureDataDir();
+  await Neutralino.filesystem.writeFile(patternsFile(), JSON.stringify(customPatterns, null, 2));
+}
+
+async function loadSettings() {
+  try {
+    const text = await Neutralino.filesystem.readFile(settingsFile());
+    const s = JSON.parse(text);
+    if (typeof s.trayEnabled === 'boolean') trayEnabled = s.trayEnabled;
+  } catch { /* defaults */ }
+}
+
+async function saveSettings() {
+  await ensureDataDir();
+  await Neutralino.filesystem.writeFile(
+    settingsFile(),
+    JSON.stringify({ trayEnabled }, null, 2),
+  );
+}
+
+/** Persist last N log lines so they remain visible after a stop/crash. */
+async function persistLogs(id) {
+  const r = running.get(id);
+  if (!r) return;
+  try {
+    await ensureDataDir();
+    await Neutralino.filesystem.writeFile(logFileFor(id), r.logs.join('\n'));
+  } catch { /* nbd */ }
+}
+
+async function loadPersistedLogs(id) {
+  try {
+    const text = await Neutralino.filesystem.readFile(logFileFor(id));
+    return text.split('\n');
+  } catch {
+    return null;
+  }
+}
+
+// ── Detection: listening ports ───────────────────────────────────────
 
 async function getListeningPorts() {
   if (!isWin) return [];
@@ -106,7 +170,7 @@ async function getListeningPorts() {
   return [...seen.values()].sort((a, b) => a.port - b.port);
 }
 
-// ── Detection: node command lines via WMI ─────────────────────────────
+// ── Detection: node command lines via WMI ────────────────────────────
 
 function utf16leBase64(str) {
   const buf = new Uint8Array(str.length * 2);
@@ -146,6 +210,16 @@ async function fetchNodeCommandLines() {
 function classifyDevCommand(cmd) {
   if (!cmd) return null;
   const c = cmd.toLowerCase().replace(/\\/g, '/');
+
+  // User-defined patterns first — they win over built-ins so the user
+  // can override or extend detection for in-house frameworks.
+  for (const p of customPatterns) {
+    if (!p.regex) continue;
+    try {
+      if (new RegExp(p.regex, 'i').test(c)) return p.framework || p.name || 'Custom';
+    } catch { /* invalid user regex, skip */ }
+  }
+
   if (
     /\bnext\b.*\bdev\b/.test(c) ||
     /next\/dist\/server\/lib\/start-server\.js/.test(c) ||
@@ -227,7 +301,7 @@ async function detectDevServers() {
   return [...seen.values()].sort((a, b) => a.port - b.port);
 }
 
-// ── Auto-add detected projects ────────────────────────────────────────
+// ── Auto-add detected projects ───────────────────────────────────────
 
 async function autoAddProjects(rows) {
   const ignored = await loadIgnoredFolders();
@@ -243,6 +317,7 @@ async function autoAddProjects(rows) {
       folder: d.folder,
       command: 'npm run dev',
       port: d.port,
+      autoRestart: false,
       createdAt: Date.now(),
       autoAdded: true,
     });
@@ -253,13 +328,29 @@ async function autoAddProjects(rows) {
   return changed;
 }
 
-// ── Process control ───────────────────────────────────────────────────
+// ── Process control + auto-restart ───────────────────────────────────
 
 function appendLog(id, line) {
   const r = running.get(id);
   if (!r) return;
   r.logs.push(line);
   if (r.logs.length > LOG_LIMIT) r.logs.splice(0, r.logs.length - LOG_LIMIT);
+
+  // Notify on first "ready"-like line from this process.
+  if (!r.lastReadyNotified && /ready|started|listening|local:|compiled successfully/i.test(line)) {
+    r.lastReadyNotified = true;
+    const p = projects.find((p) => p.id === id);
+    if (p) {
+      try {
+        Neutralino.os.showNotification(
+          `${p.name} is ready`,
+          `Listening on port ${p.port}. ${line.trim().slice(0, 80)}`,
+          'INFO',
+        );
+      } catch { /* notifications optional */ }
+    }
+  }
+
   if (id === selectedId) appendLogLineToDOM(line);
 }
 
@@ -274,11 +365,16 @@ async function startProject(id) {
   const cmd = project.command || 'npm run dev';
   const fullCmd = isWin
     ? `cmd /c "set PORT=${project.port} && ${cmd}"`
-    : `bash -lc 'PORT=${project.port} ${cmd}'`;
+    : `bash -lc 'PORT=${project.port} ${shellEscape(cmd)}'`;
 
   let info;
   try { info = await Neutralino.os.spawnProcess(fullCmd, project.folder); }
   catch (err) { alert(`Spawn failed: ${err.message || err}`); return; }
+
+  // Carry over restart count if this is part of a watchdog chain.
+  const prevRestartCount = exitedLogs.has(id)
+    ? exitedLogs.get(id).restartCount || 0
+    : 0;
 
   running.set(id, {
     processId: info.id,
@@ -288,23 +384,42 @@ async function startProject(id) {
       `> Started: ${cmd}`,
       `  cwd: ${project.folder}`,
       `  PORT: ${project.port}`,
+      prevRestartCount > 0 ? `  (auto-restart #${prevRestartCount})` : '',
       '',
-    ],
+    ].filter((l) => l !== ''),
+    restartCount: prevRestartCount,
+    lastReadyNotified: false,
+    cpu: null,
+    mem: null,
   });
+  exitedLogs.delete(id);
   render();
 }
 
 async function killSpawned(id) {
   const r = running.get(id);
   if (!r) return;
+  // Mark as intentional so the spawned-exit handler skips auto-restart,
+  // and cancel any pending watchdog for this id before killing.
+  r.intentionallyStopped = true;
+  cancelWatchdog(id);
+
   try { await Neutralino.os.updateSpawnedProcess(r.processId, 'exit'); } catch {}
   if (isWin) {
     try { await Neutralino.os.execCommand(`taskkill /pid ${r.pid} /T /F`); } catch {}
+  } else {
+    try { await Neutralino.os.execCommand(`kill -TERM -${r.pid}`); } catch {}
   }
+  await persistLogs(id);
   running.delete(id);
 }
 
-async function stopProject(id) { await killSpawned(id); render(); }
+async function stopProject(id) {
+  // User-initiated stop should clear the restart chain entirely.
+  exitedLogs.delete(id);
+  await killSpawned(id);
+  render();
+}
 
 async function killExternalPid(pid) {
   if (!pid) return;
@@ -313,6 +428,50 @@ async function killExternalPid(pid) {
   } else {
     try { await Neutralino.os.execCommand(`kill -TERM ${pid}`); } catch {}
   }
+}
+
+function cancelWatchdog(id) {
+  const t = watchdog.get(id);
+  if (t) {
+    clearTimeout(t);
+    watchdog.delete(id);
+  }
+}
+
+function scheduleAutoRestart(id, exitCode) {
+  const project = projects.find((p) => p.id === id);
+  if (!project || !project.autoRestart) return;
+
+  const prev = exitedLogs.get(id) || {};
+  const restartCount = (prev.restartCount || 0) + 1;
+  exitedLogs.set(id, { ...prev, restartCount });
+
+  if (restartCount > RESTART_BACKOFF_LIMIT) {
+    appendExitedLog(
+      id,
+      `> Auto-restart limit (${RESTART_BACKOFF_LIMIT}) reached — giving up. Fix the underlying error and restart manually.`,
+    );
+    return;
+  }
+
+  appendExitedLog(
+    id,
+    `> Auto-restart in ${RESTART_DELAY_MS}ms (attempt ${restartCount}/${RESTART_BACKOFF_LIMIT}, exit ${exitCode})`,
+  );
+  cancelWatchdog(id);
+  watchdog.set(id, setTimeout(() => {
+    watchdog.delete(id);
+    startProject(id).catch((e) => console.error('Watchdog restart failed', e));
+  }, RESTART_DELAY_MS));
+}
+
+function appendExitedLog(id, line) {
+  const entry = exitedLogs.get(id) || { lines: [] };
+  entry.lines = entry.lines || [];
+  entry.lines.push(line);
+  if (entry.lines.length > LOG_LIMIT) entry.lines.splice(0, entry.lines.length - LOG_LIMIT);
+  exitedLogs.set(id, entry);
+  if (id === selectedId) render();
 }
 
 Neutralino.events.on('spawnedProcess', (evt) => {
@@ -325,11 +484,147 @@ Neutralino.events.on('spawnedProcess', (evt) => {
   if (action === 'stdOut' || action === 'stdErr') {
     for (const line of String(data).split(/\r?\n/)) if (line) appendLog(projectId, line);
   } else if (action === 'exit') {
-    appendLog(projectId, `> Process exited (code: ${data})`);
+    const r = running.get(projectId);
+    const code = Number(data);
+    const intentional = r?.intentionallyStopped === true;
+    // Snapshot logs into exitedLogs so they remain visible after stop.
+    if (r) {
+      const prev = exitedLogs.get(projectId) || {};
+      exitedLogs.set(projectId, {
+        ...prev,
+        lines: [...r.logs, `> Process exited (code: ${code})`],
+        exitedAt: Date.now(),
+      });
+    }
+    appendLog(projectId, `> Process exited (code: ${code})`);
+    persistLogs(projectId).catch(() => {});
     running.delete(projectId);
+
+    // Auto-restart on abnormal exit only — but skip if the user (or tray
+    // "Stop all", or quit) deliberately killed the process.
+    if (!intentional && code !== 0 && !watchdog.has(projectId)) {
+      scheduleAutoRestart(projectId, code);
+    }
     render();
   }
 });
+
+// ── CPU / RAM polling ────────────────────────────────────────────────
+
+async function pollPerf() {
+  if (!isWin) return;
+  const pids = [...running.values()].map((r) => r.pid).filter(Boolean);
+  if (pids.length === 0) return;
+
+  // CIM filter: "ProcessId=A OR ProcessId=B OR ...". Joining all PIDs into
+  // one PowerShell call keeps the overhead at one spawn per poll.
+  const filter = pids.map((p) => `ProcessId=${p}`).join(' OR ');
+  const psScript =
+    `Get-CimInstance Win32_Process -Filter "${filter}" | ` +
+    'Select-Object ProcessId, WorkingSetSize, KernelModeTime, UserModeTime | ' +
+    'ConvertTo-Json -Compress';
+  const encoded = utf16leBase64(psScript);
+  let stats = new Map();
+  try {
+    const r = await Neutralino.os.execCommand(
+      `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}`,
+    );
+    const raw = JSON.parse(r.stdOut || 'null');
+    const arr = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    for (const row of arr) {
+      if (!row || !row.ProcessId) continue;
+      stats.set(Number(row.ProcessId), {
+        mem: Number(row.WorkingSetSize) || 0,
+        cpuTicks: (Number(row.KernelModeTime) || 0) + (Number(row.UserModeTime) || 0),
+      });
+    }
+  } catch { /* skip this tick */ }
+
+  const now = Date.now();
+  let changed = false;
+  for (const [id, r] of running.entries()) {
+    const s = stats.get(r.pid);
+    if (!s) continue;
+    // CPU % from delta in 100ns ticks between polls, normalized by elapsed wall time.
+    if (r.lastCpuTicks != null && r.lastCpuAt) {
+      const dTicks = s.cpuTicks - r.lastCpuTicks;
+      const dMs = now - r.lastCpuAt;
+      const cpu = dMs > 0 ? Math.min(100, (dTicks / 10000) / dMs * 100) : 0;
+      r.cpu = Math.round(cpu * 10) / 10;
+    }
+    r.mem = s.mem;
+    r.lastCpuTicks = s.cpuTicks;
+    r.lastCpuAt = now;
+    changed = true;
+  }
+  if (changed) render();
+}
+
+function fmtMem(bytes) {
+  if (!bytes) return '—';
+  const mb = bytes / (1024 * 1024);
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb.toFixed(0)} MB`;
+}
+
+// ── System tray + window lifecycle ───────────────────────────────────
+
+async function setupTray() {
+  if (!trayEnabled) {
+    try { await Neutralino.os.setTray({ icon: '', menuItems: [] }); } catch {}
+    return;
+  }
+  try {
+    await Neutralino.os.setTray({
+      icon: '/resources/icon.png',
+      menuItems: [
+        { id: 'show', text: 'Show window' },
+        { id: 'hide', text: 'Hide window' },
+        { id: 'sep1', text: '-' },
+        { id: 'stopAll', text: 'Stop all running' },
+        { id: 'sep2', text: '-' },
+        { id: 'quit', text: 'Quit' },
+      ],
+    });
+  } catch (e) {
+    console.error('Tray setup failed:', e);
+  }
+}
+
+Neutralino.events.on('trayMenuItemClicked', async (evt) => {
+  const id = evt?.detail?.id;
+  if (id === 'show') {
+    await Neutralino.window.show();
+    await Neutralino.window.focus();
+  } else if (id === 'hide') {
+    await Neutralino.window.hide();
+  } else if (id === 'stopAll') {
+    for (const pid of [...running.keys()]) await killSpawned(pid);
+    render();
+  } else if (id === 'quit') {
+    await quitApp();
+  }
+});
+
+Neutralino.events.on('windowClose', async () => {
+  if (trayEnabled) {
+    // Minimise-to-tray: keep dev servers alive.
+    await Neutralino.window.hide();
+  } else {
+    await quitApp();
+  }
+});
+
+async function quitApp() {
+  for (const id of [...running.keys()]) await killSpawned(id);
+  Neutralino.app.exit();
+}
+
+async function toggleTray() {
+  trayEnabled = !trayEnabled;
+  await saveSettings();
+  await setupTray();
+  render();
+}
 
 // ── Detected dev-server polling ──────────────────────────────────────
 
@@ -356,12 +651,23 @@ async function maybeReloadProjects() {
   return false;
 }
 
-// ── UI rendering ──────────────────────────────────────────────────────
+// ── UI rendering ─────────────────────────────────────────────────────
 
 function buildDetectedByFolder() {
   const map = new Map();
   for (const d of detected) if (d.folder) map.set(normalizeFolder(d.folder), d);
   return map;
+}
+
+function projectMatchesFilter(p) {
+  if (!filterText) return true;
+  const t = filterText.toLowerCase();
+  return (
+    (p.name || '').toLowerCase().includes(t) ||
+    (p.folder || '').toLowerCase().includes(t) ||
+    (p.command || '').toLowerCase().includes(t) ||
+    String(p.port).includes(t)
+  );
 }
 
 function render() {
@@ -374,14 +680,20 @@ function render() {
   const unsavedDetected = detected.filter(
     (d) => !d.folder || !savedFolders.has(normalizeFolder(d.folder)),
   );
+  const visibleSaved = projects.filter(projectMatchesFilter);
 
-  if (unsavedDetected.length > 0) {
+  if (unsavedDetected.length > 0 && !filterText) {
     list.appendChild(makeSection('Detected', unsavedDetected.length));
     for (const d of unsavedDetected) list.appendChild(renderDetected(d));
   }
-  if (projects.length > 0) {
-    list.appendChild(makeSection('Saved', projects.length));
-    for (const p of projects) list.appendChild(renderSaved(p, byFolder));
+  if (visibleSaved.length > 0) {
+    list.appendChild(makeSection(filterText ? 'Matches' : 'Saved', visibleSaved.length));
+    for (const p of visibleSaved) list.appendChild(renderSaved(p, byFolder));
+  } else if (filterText) {
+    const empty = document.createElement('li');
+    empty.className = 'section-label';
+    empty.innerHTML = '<span class="muted small">No projects match this filter.</span>';
+    list.appendChild(empty);
   }
 
   renderDetail(byFolder);
@@ -440,9 +752,11 @@ function renderDetected(d) {
 
 function renderSaved(p, byFolder) {
   const ext = p.folder ? byFolder.get(normalizeFolder(p.folder)) : null;
-  const isRunningManaged = running.has(p.id);
+  const r = running.get(p.id);
+  const isRunningManaged = !!r;
   const isRunningExternal = !!ext && !isRunningManaged;
   const isRunning = isRunningManaged || isRunningExternal;
+  const port = isRunningExternal ? ext.port : p.port;
 
   const li = document.createElement('li');
   if (p.id === selectedId) li.classList.add('active');
@@ -456,12 +770,38 @@ function renderSaved(p, byFolder) {
       </span>
     </div>
     <div class="folder"></div>
+    <div class="saved-meta"></div>
   `;
   li.querySelector('.name').textContent = p.name || '(unnamed)';
   li.querySelector('.folder').textContent = p.folder || '';
   li.querySelector('.status-text').textContent = isRunningExternal
     ? `Running · :${ext.port}`
     : isRunningManaged ? 'Running' : 'Stopped';
+
+  const meta = li.querySelector('.saved-meta');
+  if (isRunningManaged && (r.cpu != null || r.mem != null)) {
+    const cpu = r.cpu != null ? `${r.cpu.toFixed(1)}% CPU` : '';
+    const mem = r.mem != null ? fmtMem(r.mem) : '';
+    meta.textContent = [cpu, mem].filter(Boolean).join('  ·  ');
+  } else if (p.autoRestart && !isRunning) {
+    meta.textContent = 'auto-restart ON';
+  } else {
+    meta.textContent = '';
+  }
+
+  // Quick "Open in browser" button when running.
+  if (isRunning) {
+    const openBtn = document.createElement('button');
+    openBtn.className = 'btn-icon';
+    openBtn.title = `Open http://localhost:${port}`;
+    openBtn.textContent = '↗';
+    openBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      Neutralino.os.open(`http://localhost:${port}`);
+    });
+    li.querySelector('.row').appendChild(openBtn);
+  }
+
   li.addEventListener('click', () => {
     selectedId = p.id;
     render();
@@ -489,12 +829,15 @@ function renderDetail(byFolder) {
   const uptime = isRunningManaged ? formatUptime(Date.now() - r.startedAt) : '';
   const displayPort = isRunningExternal ? ext.port : project.port;
   const displayPid = isRunningManaged ? r.pid : isRunningExternal ? ext.pid : null;
+  const exited = exitedLogs.get(project.id);
+  const willRestart = exited && watchdog.has(project.id);
 
   detail.innerHTML = `
     <div class="detail-header">
       <div class="detail-title">
         <h1></h1>
         <div class="actions">
+          <button class="btn small" id="d-env">.env</button>
           <button class="btn small" id="d-edit">Edit</button>
           <button class="btn small danger" id="d-delete">Delete</button>
           ${
@@ -510,7 +853,20 @@ function renderDetail(byFolder) {
         <span><b>Folder:</b> <a id="d-open-folder"></a></span>
         ${displayPid ? `<span><b>PID:</b> ${displayPid}${isRunningExternal ? ' <span class="muted">(external)</span>' : ''}</span>` : ''}
         ${isRunningManaged ? `<span><b>Uptime:</b> ${uptime}</span>` : ''}
+        ${isRunningManaged && r.cpu != null ? `<span><b>CPU:</b> ${r.cpu.toFixed(1)}%</span>` : ''}
+        ${isRunningManaged && r.mem != null ? `<span><b>RAM:</b> ${fmtMem(r.mem)}</span>` : ''}
         ${isRunning ? `<span><b>URL:</b> <a id="d-open-url">http://localhost:${displayPort}</a></span>` : ''}
+        <span class="meta-toggle">
+          <label class="checkbox">
+            <input type="checkbox" id="d-autorestart" ${project.autoRestart ? 'checked' : ''}>
+            <span>Auto-restart on crash</span>
+          </label>
+        </span>
+        ${willRestart ? '<span class="meta-pill">Restarting…</span>' : ''}
+      </div>
+      <div class="log-toolbar">
+        <input type="text" id="log-filter" placeholder="Filter logs…" />
+        <button class="btn small" id="log-clear">Clear</button>
       </div>
     </div>
     <pre class="logs" id="d-logs"></pre>
@@ -529,8 +885,14 @@ function renderDetail(byFolder) {
     );
   }
 
+  detail.querySelector('#d-env').addEventListener('click', () => openEnvModal(project));
   detail.querySelector('#d-edit').addEventListener('click', () => openModal(project.id));
   detail.querySelector('#d-delete').addEventListener('click', () => deleteProject(project.id));
+  detail.querySelector('#d-autorestart').addEventListener('change', async (e) => {
+    project.autoRestart = e.target.checked;
+    await saveProjects();
+    render();
+  });
   if (isRunning) {
     detail.querySelector('#d-stop').addEventListener('click', async () => {
       if (isRunningExternal) {
@@ -545,24 +907,55 @@ function renderDetail(byFolder) {
     detail.querySelector('#d-start').addEventListener('click', () => startProject(project.id));
   }
 
+  // Logs: live, or replay from exitedLogs after a stop/crash.
   const logsEl = detail.querySelector('#d-logs');
+  let logText = '';
   if (isRunningManaged && r?.logs) {
-    logsEl.textContent = r.logs.join('\n') + '\n';
+    logText = r.logs.join('\n');
   } else if (isRunningExternal) {
-    logsEl.textContent =
+    logText =
       '> This dev server is running externally (started outside this app).\n' +
       '> Logs are written to the terminal where it was launched.\n' +
-      `> PID ${ext.pid}  ·  port ${ext.port}  ·  framework ${ext.kind}\n`;
+      `> PID ${ext.pid}  ·  port ${ext.port}  ·  framework ${ext.kind}`;
+  } else if (exited && exited.lines) {
+    logText = exited.lines.join('\n');
   } else {
-    logsEl.textContent = '';
+    // Try persisted logs from disk as a last resort.
+    loadPersistedLogs(project.id).then((lines) => {
+      if (lines && logsEl.textContent === '') {
+        logsEl.textContent = lines.join('\n');
+        logsEl.scrollTop = logsEl.scrollHeight;
+      }
+    });
   }
+  logsEl.textContent = logText;
   logsEl.scrollTop = logsEl.scrollHeight;
+
+  // Log filter — purely client-side; doesn't mutate stored logs.
+  const filterInput = detail.querySelector('#log-filter');
+  filterInput.addEventListener('input', () => {
+    const q = filterInput.value.toLowerCase();
+    if (!q) {
+      logsEl.textContent = logText;
+    } else {
+      logsEl.textContent = logText
+        .split('\n')
+        .filter((line) => line.toLowerCase().includes(q))
+        .join('\n');
+    }
+    logsEl.scrollTop = logsEl.scrollHeight;
+  });
+  detail.querySelector('#log-clear').addEventListener('click', () => {
+    if (isRunningManaged && r) r.logs = [];
+    exitedLogs.delete(project.id);
+    render();
+  });
 }
 
 function appendLogLineToDOM(line) {
   const logsEl = document.querySelector('#d-logs');
   if (!logsEl) return;
-  const text = logsEl.textContent + line + '\n';
+  const text = logsEl.textContent + (logsEl.textContent ? '\n' : '') + line;
   const lines = text.split('\n');
   if (lines.length > 500) lines.splice(0, lines.length - 500);
   logsEl.textContent = lines.join('\n');
@@ -578,7 +971,7 @@ function formatUptime(ms) {
   return `${h}h ${m % 60}m`;
 }
 
-// ── Modal handlers (add/edit) ────────────────────────────────────────
+// ── Add / Edit project modal ─────────────────────────────────────────
 
 async function pickFolder() {
   try {
@@ -597,6 +990,7 @@ function openModal(id) {
   $('#f-folder').value = p?.folder ?? '';
   $('#f-command').value = p?.command ?? 'npm run dev';
   $('#f-port').value = p?.port ?? 3000;
+  $('#f-autorestart').checked = !!p?.autoRestart;
   $('#modal').classList.remove('hidden');
 }
 
@@ -611,6 +1005,7 @@ async function saveProjectFromModal() {
     folder: $('#f-folder').value.trim(),
     command: $('#f-command').value.trim() || 'npm run dev',
     port: Number($('#f-port').value) || 3000,
+    autoRestart: $('#f-autorestart').checked,
   };
   if (!data.folder) { alert('Please choose a folder.'); return; }
   if (!data.name) data.name = data.folder.split(/[\\/]/).pop() || 'project';
@@ -629,74 +1024,226 @@ async function saveProjectFromModal() {
 }
 
 async function deleteProject(id) {
-  const p = projects.find((x) => x.id === id);
-  if (!p) return;
-  if (!confirm(`Remove "${p.name}"? Will stop it if running.`)) return;
-  await killSpawned(id);
-  projects = projects.filter((x) => x.id !== id);
-  await saveProjects();
+  if (running.has(id)) {
+    if (!confirm('This project is running. Stop it and delete?')) return;
+    await killSpawned(id);
+  } else if (!confirm('Delete this project?')) {
+    return;
+  }
+  projects = projects.filter((p) => p.id !== id);
   if (selectedId === id) selectedId = null;
+  exitedLogs.delete(id);
+  await saveProjects();
   render();
+}
+
+// ── .env preview modal ──────────────────────────────────────────────
+
+const SECRET_KEY_RE = /(secret|password|token|key|api|auth|private|signing|salt|dsn)/i;
+
+function parseEnv(text) {
+  const out = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!m) continue;
+    let val = m[2];
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    const isSecret = SECRET_KEY_RE.test(m[1]);
+    out.push({
+      key: m[1],
+      value: isSecret ? '••• ' + (val.length ? `(${val.length} chars)` : 'empty') : val,
+      isSecret,
+    });
+  }
+  return out;
+}
+
+async function openEnvModal(project) {
+  if (!project.folder) return;
+  const candidates = ['.env', '.env.local', '.env.development', '.env.development.local'];
+  let foundPath = null;
+  let foundText = '';
+  for (const c of candidates) {
+    try {
+      const text = await Neutralino.filesystem.readFile(`${project.folder}/${c}`);
+      foundPath = c;
+      foundText = text;
+      break;
+    } catch { /* try next */ }
+  }
+  $('#env-modal').classList.remove('hidden');
+  if (!foundPath) {
+    $('#env-modal-body').innerHTML =
+      '<p class="muted">No <code>.env</code> file found in this project folder.</p>' +
+      '<p class="muted small">Looked for: ' + candidates.join(', ') + '</p>';
+    return;
+  }
+  const rows = parseEnv(foundText);
+  if (rows.length === 0) {
+    $('#env-modal-body').innerHTML =
+      `<p class="muted">Found <code>${foundPath}</code> but no variables to display.</p>`;
+    return;
+  }
+  $('#env-modal-body').innerHTML = `
+    <p class="muted small">Showing <code>${foundPath}</code>. Values matching <code>secret|password|token|key|api</code> are masked.</p>
+    <div class="env-table">
+      ${rows.map((r) => `
+        <div class="env-row${r.isSecret ? ' secret' : ''}">
+          <span class="env-key"></span>
+          <span class="env-val"></span>
+        </div>
+      `).join('')}
+    </div>
+  `;
+  const keyEls = $('#env-modal-body').querySelectorAll('.env-key');
+  const valEls = $('#env-modal-body').querySelectorAll('.env-val');
+  rows.forEach((r, i) => {
+    keyEls[i].textContent = r.key;
+    valEls[i].textContent = r.value;
+  });
+}
+
+function closeEnvModal() {
+  $('#env-modal').classList.add('hidden');
+}
+
+// ── Custom framework patterns modal ─────────────────────────────────
+
+function openPatternsModal() {
+  $('#patterns-modal').classList.remove('hidden');
+  renderPatternsTable();
+}
+
+function closePatternsModal() {
+  $('#patterns-modal').classList.add('hidden');
+}
+
+function renderPatternsTable() {
+  const body = $('#patterns-tbody');
+  body.innerHTML = '';
+  if (customPatterns.length === 0) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td colspan="3" class="muted small" style="padding:14px;">
+      No custom patterns yet. Add one to detect frameworks not in the built-in list
+      (e.g. <code>fastify dev</code>, internal CLIs, etc.).
+    </td>`;
+    body.appendChild(tr);
+    return;
+  }
+  for (const p of customPatterns) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="mono"></td>
+      <td><code></code></td>
+      <td><button class="btn small danger" data-id="${p.id}">Remove</button></td>
+    `;
+    tr.children[0].textContent = p.framework || p.name;
+    tr.children[1].querySelector('code').textContent = p.regex;
+    tr.children[2].querySelector('button').addEventListener('click', async () => {
+      customPatterns = customPatterns.filter((x) => x.id !== p.id);
+      await saveCustomPatterns();
+      renderPatternsTable();
+    });
+    body.appendChild(tr);
+  }
+}
+
+async function addPatternFromForm() {
+  const framework = $('#pattern-name').value.trim();
+  const regex = $('#pattern-regex').value.trim();
+  if (!framework || !regex) { alert('Both fields are required.'); return; }
+  try { new RegExp(regex, 'i'); }
+  catch (e) { alert(`Invalid regex: ${e.message}`); return; }
+  customPatterns.push({
+    id: crypto.randomUUID(),
+    framework,
+    regex,
+  });
+  await saveCustomPatterns();
+  $('#pattern-name').value = '';
+  $('#pattern-regex').value = '';
+  renderPatternsTable();
+  // Re-run detection so newly-matched servers appear immediately.
+  refreshDetected();
 }
 
 // ── Ports modal ──────────────────────────────────────────────────────
 
 async function openPortsModal() {
   $('#ports-modal').classList.remove('hidden');
-  await refreshPortsList();
+  await refreshPortsModal();
 }
 
 function closePortsModal() {
   $('#ports-modal').classList.add('hidden');
 }
 
-async function refreshPortsList() {
-  const tbody = $('#ports-tbody');
-  tbody.innerHTML = '<tr><td colspan="4" class="muted">Scanning…</td></tr>';
+async function refreshPortsModal() {
   const rows = await getListeningPorts();
-  tbody.innerHTML = '';
-  if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="4" class="muted">No listening TCP ports found.</td></tr>';
-    return;
-  }
+  const body = $('#ports-tbody');
+  body.innerHTML = '';
   for (const r of rows) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td><b></b></td><td></td><td></td><td></td>';
-    tr.children[0].querySelector('b').textContent = r.port;
-    tr.children[1].textContent = r.exe || '?';
+    tr.innerHTML = `<td></td><td></td><td></td><td class="mono"></td>`;
+    tr.children[0].textContent = r.port;
+    tr.children[1].textContent = r.exe;
     tr.children[2].textContent = r.pid;
-    tr.children[3].textContent = r.host || '';
-    tbody.appendChild(tr);
+    tr.children[3].textContent = r.host;
+    body.appendChild(tr);
   }
 }
 
-// ── Global UI wiring ─────────────────────────────────────────────────
+// ── Wire up DOM events ───────────────────────────────────────────────
 
-function bindGlobalUI() {
+document.addEventListener('DOMContentLoaded', () => {
   $('#add-btn').addEventListener('click', () => openModal(null));
   $('#ports-btn').addEventListener('click', openPortsModal);
-  $('#f-cancel').addEventListener('click', closeModal);
-  $('#f-save').addEventListener('click', saveProjectFromModal);
+  $('#patterns-btn').addEventListener('click', openPatternsModal);
+  $('#tray-btn').addEventListener('click', toggleTray);
+
+  $('#filter-input').addEventListener('input', (e) => {
+    filterText = e.target.value;
+    render();
+  });
+
   $('#f-pick').addEventListener('click', async () => {
     const folder = await pickFolder();
-    if (folder) {
-      $('#f-folder').value = folder;
-      if (!$('#f-name').value) {
-        $('#f-name').value = folder.split(/[\\/]/).pop();
-      }
-    }
+    if (folder) $('#f-folder').value = folder;
   });
+  $('#f-cancel').addEventListener('click', closeModal);
+  $('#f-save').addEventListener('click', saveProjectFromModal);
+  $('#env-close').addEventListener('click', closeEnvModal);
+  $('#patterns-close').addEventListener('click', closePatternsModal);
+  $('#pattern-add').addEventListener('click', addPatternFromForm);
   $('#ports-close').addEventListener('click', closePortsModal);
-  $('#ports-refresh').addEventListener('click', refreshPortsList);
-}
+  $('#ports-refresh').addEventListener('click', refreshPortsModal);
+});
 
-// ── Boot ──────────────────────────────────────────────────────────────
+// ── Startup ──────────────────────────────────────────────────────────
 
-(async function init() {
-  DATA_DIR = await Neutralino.os.getPath('data');
+(async () => {
+  try {
+    const info = await Neutralino.os.getEnv('APPDATA');
+    DATA_DIR = `${info}/DevServerManager`;
+  } catch {
+    DATA_DIR = '.';
+  }
+
+  await loadSettings();
   projects = await loadProjects();
-  bindGlobalUI();
+  customPatterns = await loadCustomPatterns();
+
+  await setupTray();
+  await refreshDetected();
   render();
-  refreshDetected();
+
   setInterval(refreshDetected, POLL_MS);
+  setInterval(pollPerf, PERF_POLL_MS);
+  setInterval(() => {
+    if (selectedId && running.has(selectedId)) render();
+  }, 1000);
 })();

@@ -11,6 +11,8 @@
       <div class="topbar-actions">
         <button id="add-btn" class="btn primary">+ Add Project</button>
         <button id="ports-btn" class="btn">Listening Ports</button>
+        <button id="patterns-btn" class="btn">Custom Patterns</button>
+        <button id="tray-btn" class="btn" title="Toggle tray icon / minimise-to-tray">Tray ◔</button>
       </div>
     </header>
 
@@ -21,10 +23,13 @@
           <span>Projects</span>
           <span id="project-count" class="muted">0</span>
         </div>
+        <div class="filter-row">
+          <input id="filter-input" type="text" placeholder="Filter projects…" />
+        </div>
         <ul id="project-list" class="project-list"></ul>
       </aside>
 
-      <!-- Right: details / logs OR ports panel -->
+      <!-- Right: details / logs -->
       <section id="detail" class="detail">
         <div class="empty" id="empty-state">
           <p>No project selected.</p>
@@ -56,6 +61,10 @@
           <span>Port</span>
           <input id="f-port" type="number" value="3000" min="1" max="65535" />
         </label>
+        <label class="checkbox">
+          <input id="f-autorestart" type="checkbox" />
+          <span>Auto-restart on crash (up to 3 attempts)</span>
+        </label>
         <div class="modal-actions">
           <button class="btn" id="f-cancel">Cancel</button>
           <button class="btn primary" id="f-save">Save</button>
@@ -83,8 +92,45 @@
       </div>
     </div>
 
-    <!-- Neutralinojs client library — injected at build/run, provides the
-         `Neutralino` global the renderer uses for OS access. -->
+    <!-- Custom framework patterns modal -->
+    <div id="patterns-modal" class="modal-overlay hidden">
+      <div class="modal wide">
+        <h2>Custom Framework Patterns</h2>
+        <p class="muted small">
+          Each pattern is a JavaScript regex tested (case-insensitive) against the lowercased
+          process command line. Matches show in the Detected list with the framework name you
+          give them. Built-in patterns (Next.js / Vite / etc.) always apply on top.
+        </p>
+        <div class="ports-list-wrap">
+          <table class="ports-table">
+            <thead>
+              <tr><th>Framework</th><th>Regex</th><th></th></tr>
+            </thead>
+            <tbody id="patterns-tbody"></tbody>
+          </table>
+        </div>
+        <div class="pattern-form">
+          <input id="pattern-name" type="text" placeholder="Framework name (e.g. Fastify)" />
+          <input id="pattern-regex" type="text" placeholder="Regex (e.g. fastify[^ ]*\\s+dev)" />
+          <button class="btn primary" id="pattern-add">Add</button>
+        </div>
+        <div class="modal-actions">
+          <button class="btn primary" id="patterns-close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- .env preview modal -->
+    <div id="env-modal" class="modal-overlay hidden">
+      <div class="modal wide">
+        <h2>.env preview</h2>
+        <div id="env-modal-body"></div>
+        <div class="modal-actions">
+          <button class="btn primary" id="env-close">Close</button>
+        </div>
+      </div>
+    </div>
+
     <script src="neutralino.js"></script>
     <script src="renderer.js"></script>
   </body>
